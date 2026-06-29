@@ -85,20 +85,11 @@ async def find_and_click_button(button_text, message_id=None, search_recent=Fals
         print(f"[{now()}] [Button Error] {e}")
         return False
 
-async def click_menu():
-    return await find_and_click_button("Menu", search_recent=True, limit=15)
-
-async def click_number_store():
-    return await find_and_click_button("Number Store", search_recent=True, limit=15)
-
-async def click_country(country_name):
-    return await find_and_click_button(country_name, search_recent=True, limit=15)
-
 async def click_price(price_text):
     return await find_and_click_button(price_text, search_recent=True, limit=10)
 
-async def click_back():
-    return await find_and_click_button("Back", search_recent=True, limit=10)
+async def click_country(country_name):
+    return await find_and_click_button(country_name, search_recent=True, limit=15)
 
 async def click_ok():
     return await find_and_click_button("OK", search_recent=True, limit=5)
@@ -108,10 +99,6 @@ async def click_ok():
 # =============================================================================
 class BuyerState:
     IDLE = "idle"
-    MENU = "menu"
-    STORE = "store"
-    COUNTRY = "country"
-    PRICE = "price"
     WAITING_RESULT = "waiting_result"
     SUCCESS = "success"
     NO_NUMBERS = "no_numbers"
@@ -158,7 +145,6 @@ async def handle_pulse_message(event):
         buyer.success_count += 1
         async with buyer._lock:
             buyer.state = BuyerState.SUCCESS
-        # Keep running to try for more numbers, or stop if you only want one
         await asyncio.sleep(5)
         async with buyer._lock:
             buyer.state = BuyerState.IDLE
@@ -170,13 +156,6 @@ async def handle_pulse_message(event):
         buyer.fail_count += 1
         async with buyer._lock:
             buyer.state = BuyerState.NO_NUMBERS
-        # Click OK to dismiss
-        await asyncio.sleep(CLICK_DELAY)
-        await click_ok()
-        await asyncio.sleep(CLICK_DELAY)
-        await click_back()
-        await asyncio.sleep(CLICK_DELAY)
-        await click_back()
         return
 
     # --- TRYING TO PURCHASE ---
@@ -187,37 +166,9 @@ async def handle_pulse_message(event):
         return
 
     # --- PROGRESS PERCENTAGE (0%, 10%, etc) ---
-    if text.strip().endswith("%") and text.strip().replace("%","").isdigit():
-        print(f"[{now()}] Progress: {text.strip()}")
-        return
-
-    # --- MENU DETECTED ---
-    if has_buttons:
-        button_texts = [strip_emoji(btn.text).lower() for row in event.message.buttons for btn in row]
-        if any("number store" in t for t in button_texts):
-            print(f"[{now()}] Menu detected with Number Store button")
-            async with buyer._lock:
-                if buyer.state in [BuyerState.IDLE, BuyerState.MENU, BuyerState.NO_NUMBERS, BuyerState.ERROR]:
-                    buyer.state = BuyerState.MENU
-            return
-
-    # --- COUNTRY LIST DETECTED ---
-    if has_buttons:
-        button_texts = [strip_emoji(btn.text) for row in event.message.buttons for btn in row]
-        country_names = [c for c in COUNTRIES if any(c.lower() in strip_emoji(t).lower() for t in button_texts)]
-        if country_names:
-            print(f"[{now()}] Country list detected: {country_names}")
-            async with buyer._lock:
-                if buyer.state in [BuyerState.STORE, BuyerState.NO_NUMBERS]:
-                    buyer.state = BuyerState.COUNTRY
-            return
-
-    # --- PRICE SELECTION DETECTED ---
-    if has_buttons and PRICE_BUTTON.lower() in text_lower:
-        print(f"[{now()}] Price selection screen detected")
-        async with buyer._lock:
-            if buyer.state == BuyerState.COUNTRY:
-                buyer.state = BuyerState.PRICE
+    stripped = text.strip()
+    if stripped.endswith("%") and stripped.replace("%","").isdigit():
+        print(f"[{now()}] Progress: {stripped}")
         return
 
 # =============================================================================
@@ -236,49 +187,25 @@ async def buy_loop():
                 buyer.attempts += 1
                 print(f"[{now()}] === ATTEMPT #{buyer.attempts} | Country: {country} | Success: {buyer.success_count} | Fail: {buyer.fail_count} ===")
 
-                # Step 1: Click Menu
-                print(f"[{now()}] Clicking Menu...")
-                if not await click_menu():
-                    print(f"[{now()}] Menu not found, sending /start...")
-                    await client.send_message(PULSE_BOT, "/start")
-                    await asyncio.sleep(2)
-                    await click_menu()
-
-                await asyncio.sleep(CLICK_DELAY)
-
-                # Step 2: Click Number Store
-                print(f"[{now()}] Clicking Number Store...")
-                if not await click_number_store():
-                    print(f"[{now()}] Number Store not found, retrying...")
-                    await asyncio.sleep(1)
-                    continue
-
-                await asyncio.sleep(CLICK_DELAY)
-
-                # Step 3: Click Country
+                # Step 1: Click the country name (Thailand or Tunisia)
                 print(f"[{now()}] Clicking {country}...")
                 if not await click_country(country):
-                    print(f"[{now()}] {country} not found, trying to find in recent messages...")
-                    await asyncio.sleep(1)
-                    # Try scrolling or searching more
-                    if not await click_country(country):
-                        print(f"[{now()}] {country} button not found, skipping to next country...")
-                        buyer.next_country()
-                        continue
-
-                await asyncio.sleep(CLICK_DELAY)
-
-                # Step 4: Click Price
-                print(f"[{now()}] Clicking {PRICE_BUTTON}...")
-                if not await click_price(PRICE_BUTTON):
-                    print(f"[{now()}] Price button not found, going back...")
-                    await click_back()
-                    buyer.next_country()
+                    print(f"[{now()}] {country} button not found, retrying in {RETRY_DELAY}s...")
+                    await asyncio.sleep(RETRY_DELAY)
                     continue
 
                 await asyncio.sleep(CLICK_DELAY)
 
-                # Step 5: Wait for result
+                # Step 2: Click the price ($0.25)
+                print(f"[{now()}] Clicking {PRICE_BUTTON}...")
+                if not await click_price(PRICE_BUTTON):
+                    print(f"[{now()}] Price button not found, retrying in {RETRY_DELAY}s...")
+                    await asyncio.sleep(RETRY_DELAY)
+                    continue
+
+                await asyncio.sleep(CLICK_DELAY)
+
+                # Step 3: Wait for result
                 print(f"[{now()}] Waiting {RESULT_WAIT}s for result...")
                 async with buyer._lock:
                     buyer.state = BuyerState.WAITING_RESULT
@@ -290,19 +217,20 @@ async def buy_loop():
                     current = buyer.state
 
                 if current == BuyerState.WAITING_RESULT:
-                    # Still waiting, maybe stuck. Go back and retry
-                    print(f"[{now()}] Still waiting after {RESULT_WAIT}s, going back to retry...")
-                    await click_back()
-                    await click_back()
+                    # Still waiting, maybe stuck. Switch country and retry
+                    print(f"[{now()}] Still waiting after {RESULT_WAIT}s, switching country...")
                     buyer.next_country()
 
                 elif current == BuyerState.NO_NUMBERS:
-                    # Handler already clicked OK and Back, just wait then retry
-                    print(f"[{now()}] Confirmed no numbers, waiting {RETRY_DELAY}s before next try...")
-                    await asyncio.sleep(RETRY_DELAY)
+                    # Click OK to dismiss popup, then switch country immediately
+                    print(f"[{now()}] No numbers popup detected. Clicking OK...")
+                    await asyncio.sleep(CLICK_DELAY)
+                    await click_ok()
+                    await asyncio.sleep(CLICK_DELAY)
+                    print(f"[{now()}] Switching to next country...")
+                    buyer.next_country()
                     async with buyer._lock:
                         buyer.state = BuyerState.IDLE
-                    buyer.next_country()
 
                 elif current == BuyerState.SUCCESS:
                     # Got a number! Wait a bit then continue for more
